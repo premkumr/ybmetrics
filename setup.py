@@ -1,14 +1,14 @@
 from setuptools import setup 
 setup( 
     name='ybmetrics', 
-    version='0.5.3',
+    version='0.5.4',
     author='Prem',
     author_email='contactprem@gmail.com',
     license='MIT',
     packages=['ybmetrics'],
     python_requires=">=3.0",
     install_requires = [
-        'requests >=2.28',
+        'requests >=2.0',
         'tabulate >=0.8',
     ],
     entry_points={

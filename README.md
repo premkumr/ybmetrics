@@ -7,7 +7,7 @@ displays the change in metrics for the specified keys. By default will monitor c
 # Installation
 
 ```bash
-pip install https://github.com/premkumr/ybmetrics/releases/download/v0.5.3/ybmetrics-0.5.3-py3-none-any.whl
+pip install https://github.com/premkumr/ybmetrics/releases/download/v0.5.4/ybmetrics-0.5.4-py3-none-any.whl
 ```
 
 # Usage
