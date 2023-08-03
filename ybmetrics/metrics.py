@@ -8,11 +8,13 @@ import shelve
 import sys
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
-from collections import OrderedDict
-import itertools
+
+import psycopg2
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
@@ -36,7 +38,7 @@ class BraceExpander:
     '''
     def expand(self, s):
         if not self.has_braces(s):
-            return [s]
+            return s.split(',')
         items = []
         for t in self.expand_one(s):
             if self.has_braces(t):
@@ -68,12 +70,17 @@ class BraceExpander:
         assert(self.expand('127.0.0.1') == ['127.0.0.1'])
         assert(self.expand('127.0.0.{1..3}') == ['127.0.0.1', '127.0.0.2', '127.0.0.3'])
         assert(self.expand('127.0.0.{1,3}') == ['127.0.0.1', '127.0.0.3'])
+        assert(self.expand('127.0.0.1,127.0.0.') != ['127.0.0.1', '127.0.0.3'])
+        assert(self.expand('127.0.0.1,127.0.0.3') == ['127.0.0.1', '127.0.0.3'])
 
 
 class MetricsTracker:
     def __init__(self):
         dbfile = os.path.join(tempfile.gettempdir(), 'metrics.db')
         self._db = None
+        self.dbport = 5433
+        self.metricsport = 9000
+        self.lastdisplaytime = time.time()
         try:
             self._db = shelve.open(dbfile, writeback=True)
         except Exception as e:
@@ -95,6 +102,19 @@ class MetricsTracker:
 
     def clean(self):
         self.db=[]
+
+    def get_servers(self):
+        try:
+            connstr = 'postgresql://yugabyte@{}:{}/yugabyte'.format(self.hosts[0], self.dbport)
+            conn = psycopg2.connect(connstr)
+            with conn.cursor() as cur:
+                sql='select host from yb_servers()'
+                cur.execute(sql)
+                conn.commit()
+                result = cur.fetchall()
+                print(result)
+        except Exception as e:
+            print(e)
 
     def get_metrics(self):
         clean_data = {}
@@ -177,13 +197,14 @@ class MetricsTracker:
         return data
 
     def display_data(self, data):
+        self.lastdisplaytime = time.time()
         self.print_count += 1
         error = ''
         
         if len(self.failedhosts) > 0 :
             error = ' : [unable to fetch from {} '.format(sorted(list(self.failedhosts)))
 
-        print('>>> {}{}'.format(self.print_count, error))
+        print('>>> {} - [{}] {}'.format(self.print_count, time.asctime(), error))
         print(data)
         print("\n")
 
@@ -272,9 +293,18 @@ class MetricsTracker:
             pass
 
     def sleep(self, interval) :
+        OKGREEN = '\033[92m'
+        BGGREEN = '\033[42m'
+        ENDC = '\033[0m'
+        BOLD = '\033[1m'
         for n in range(interval, 0, -1):
             progressbar = '-' * n + ' ' *(interval - n)
-            print(progressbar, end='\r')
+            elapsed = int(time.time() - self.lastdisplaytime)
+            C_BEGIN = C_END = ''
+            if elapsed <= 5:
+                C_BEGIN = '{}{}'.format(BOLD,OKGREEN)
+                C_END = ENDC
+            print('{}[{} s] {}{}'.format(C_BEGIN, elapsed, progressbar, C_END), end='\r')
             time.sleep(1)
 
     def tablets(self):
@@ -292,7 +322,7 @@ def cli(argv: Optional[str] = None):
     argv = argv or sys.argv[:]
     prog_name = Path(argv[0]).name
     parser = argparse.ArgumentParser(prog=prog_name, description='Metrics Monitor')
-    parser.add_argument('-i', '--interval', dest='interval', type=int, default = 5,  help = 'time to wait')
+    parser.add_argument('-i', '--interval', dest='interval', type=int, default = 2,  help = 'time to wait')
     parser.add_argument('--top', dest='top', type = int, default = None,  help = 'top N tablet ids')
 
     parser.add_argument('-v', '--vertical', dest='vertical', default = False, action='store_true')
@@ -305,7 +335,8 @@ def cli(argv: Optional[str] = None):
     parser.add_argument('--write', default = False, action='store_true', help='only rocks write key')
     parser.add_argument('--txn', default = False, action='store_true', help='only txn keys')
 
-    parser.add_argument('--host', dest='hosts', action='append', default=[], help = 'tserver hosts (host:port[9000])')
+    parser.add_argument('--host', dest='hosts',  default='127.0.0.{1..3}', help = 'tserver hosts (host:port[9000])')
+    parser.add_argument('--dbport', dest='dbport',  default=5433, help = 'dbport')
     parser.add_argument('-m', '--mode', dest='mode', choices=['monitor', 'tablets','clean'], default='monitor', nargs='?', help = 'Execution mode')
     
     args = parser.parse_args()
@@ -319,21 +350,15 @@ def cli(argv: Optional[str] = None):
     elif args.txn:
         args.keys = '(transaction)'
 
-    if len(args.hosts) == 0:
-        if type(args.hosts) != list:
-            args.hosts = []
-        args.hosts.append('127.0.0.{1..3}')
-    elif type(args.hosts) == str:
-        args.hosts = [args.hosts]
-
     m = MetricsTracker()
-    m.hosts = []
-    expander = BraceExpander()
-
-    m.hosts = list(itertools.chain.from_iterable([expander.expand(h) for h in args.hosts]))
+    m.hosts = BraceExpander().expand(args.hosts)
     
     m.keypattern = args.keys
     m.full_tabletid = args.full_tabletid
+    m.dbport = args.dbport
+
+    #m.get_servers()
+
     if args.mode == 'monitor':
         m.monitor(args.interval, args.vertical, args.top)
     elif args.mode == 'tablets':
